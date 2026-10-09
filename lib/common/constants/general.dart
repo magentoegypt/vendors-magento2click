@@ -60,7 +60,7 @@ const kProductListPerPage = 20;
 const kSizeLeftMenu = 250.0;
 
 class SettingConstants {
-  static const aboutUsUrl = 'https://www.magentoegypt.com/';
+  static const aboutUsUrl = 'https://styleya.net/eg-en/about-us';
 }
 
 class SplashScreenTypeConstants {
