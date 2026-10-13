@@ -135,6 +135,7 @@ class _ShippingAddressState extends State<ShippingAddress> {
           address?.city = widget.address?.city;
           address?.zipCode = widget.address?.zipCode;
           address?.state = widget.address?.state;
+          address?.regionId = widget.address?.regionId;
           address?.country = widget.address?.country;
           address?.countryId = widget.address?.countryId;
           loadUserInfoFromAddress(address);

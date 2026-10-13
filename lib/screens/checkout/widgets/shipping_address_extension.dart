@@ -271,6 +271,7 @@ extension on _ShippingAddressState {
         City? city = cities!
             .firstWhereOrNull((o) => o.id.toString() == val.toString());
         address!.state = city?.name;
+        address!.regionId = city?.regionId;
         _textControllers[AddressFieldType.state]?.text = city?.name ?? '';
         address!.city = '';
         address!.block = '';
@@ -367,6 +368,7 @@ extension on _ShippingAddressState {
                           Country(id: country.isoCode, name: country.name);
                       cities = await Services().widget.loadCitiesWithCountry(c);
                       address!.state = '';
+                      address!.regionId = null;
                       address!.city = '';
                       address!.block = '';
                       _textControllers[AddressFieldType.state]?.text = '';
@@ -408,6 +410,7 @@ extension on _ShippingAddressState {
                             Country(id: countries![index].code, name: countries![index].name);
                             cities = await Services().widget.loadCitiesWithCountry(c);
                             address!.state = '';
+                            address!.regionId = null;
                             address!.city = '';
                             address!.block = '';
                             _textControllers[AddressFieldType.state]?.text = '';
@@ -468,12 +471,16 @@ extension on _ShippingAddressState {
         address?.country = value;
         break;
       case AddressFieldType.state:
+        // A typed governorate has no known region_id; keep the id only while
+        // the name still matches the one it was picked with.
+        if (value != address?.state) address?.regionId = null;
         address?.state = value;
         break;
       case AddressFieldType.city:
         // When the governorate dropdown could not load, the plain "City"
         // text field takes its place — the typed value is the region.
         if (cities?.isEmpty ?? true) {
+          if (value != address?.state) address?.regionId = null;
           address?.state = value;
           _textControllers[AddressFieldType.state]?.text = value ?? '';
         }

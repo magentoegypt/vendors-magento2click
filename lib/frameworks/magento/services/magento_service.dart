@@ -2725,6 +2725,7 @@ class MagentoService extends BaseServices {
     try {
       printLog('[Magento] customer token ${isBlank(token) ? 'MISSING' : 'present'}');
       var address = cartModel!.address!;
+      await _fillRegionId(address);
       printLog(convert.jsonEncode(address.toMagentoJson()));
       var url = token != null
           ? MagentoHelper.buildUrl(
@@ -2764,6 +2765,7 @@ class MagentoService extends BaseServices {
   Future<List<PaymentMethod>> getPaymentMethods({CartModel? cartModel, ShippingMethod? shippingMethod, String? token, String? langCode}) async {
     try {
       var address = cartModel!.address;
+      await _fillRegionId(address);
       final params = {
         'addressInformation': {
           // Flag ONLY the shipping address for the address book. Magento saves
@@ -2851,7 +2853,8 @@ class MagentoService extends BaseServices {
           ? MagentoHelper.buildUrl(domain, 'carts/mine/payment-information')!
           : MagentoHelper.buildUrl(
               domain, 'guest-carts/$guestQuoteId/payment-information')!;
-      var params = Order().toMagentoJson(cartModel!, null, paid);
+      await _fillRegionId(cartModel!.address);
+      var params = Order().toMagentoJson(cartModel, null, paid);
       if (isGuest) {
         // Email is optional at checkout — effectiveEmail falls back to the
         // per-phone default when the shopper left the field empty.
@@ -2920,9 +2923,6 @@ class MagentoService extends BaseServices {
   }
 
 
-  Future<Order> getSingleOrder({required UserModel? user, required String entityId}) async {
-    try {
-
   /// The order as the app knows it without reading it back.
   ///
   /// A guest has no customer token, and the integration token is refused on
@@ -2958,6 +2958,9 @@ class MagentoService extends BaseServices {
 
   /// Reads a placed order back with the customer's token. mstore/me/orders/:id
   /// only answers the order's owner.
+  Future<Order> getSingleOrder({required UserModel? user, required String entityId}) async {
+    try {
+
       var url =  MagentoHelper.buildUrl(domain, 'mstore/me/orders/$entityId')!;
       printLog(url);
       final res = await httpGet(url,
@@ -3159,30 +3162,14 @@ class MagentoService extends BaseServices {
     // whole request. (This is also why updateUserInfo's long-standing partial
     // PUTs — which fire on every launch via updateDeviceToken — don't wipe
     // anyone's addresses.)
-    final res = await httpGet(MagentoHelper.buildUrl(domain, 'customers/me')!,
-        headers: {'Authorization': 'Bearer ${UserBox().userInfo?.cookie}'});
-    final customer = convert.jsonDecode(res.body);
-    if (customer is Map && customer['message'] != null) {
-      throw Exception(MagentoHelper.getErrorMessage(customer));
-    }
-    customer.remove('addresses');
-    final ext = customer['extension_attributes'];
-    if (ext is Map) {
-      ext['is_subscribed'] = subscribe;
-    } else {
-      customer['extension_attributes'] = {'is_subscribed': subscribe};
-    }
-
-    final put = await httpPut(MagentoHelper.buildUrl(domain, 'customers/me')!,
-        headers: {
-          'Authorization': 'Bearer ${UserBox().userInfo?.cookie}',
-          'content-type': 'application/json',
-        },
-        body: convert.jsonEncode({'customer': customer}));
-    final body = convert.jsonDecode(put.body);
-    if (body is Map && body['message'] != null) {
-      throw Exception(MagentoHelper.getErrorMessage(body));
-    }
+    final body = await _putCustomerMe(UserBox().userInfo?.cookie, (customer) {
+      final ext = customer['extension_attributes'];
+      if (ext is Map) {
+        ext['is_subscribed'] = subscribe;
+      } else {
+        customer['extension_attributes'] = {'is_subscribed': subscribe};
+      }
+    });
     final savedExt = body['extension_attributes'];
     if (savedExt is Map && savedExt.containsKey('is_subscribed')) {
       return savedExt['is_subscribed'] == true;
@@ -3193,106 +3180,156 @@ class MagentoService extends BaseServices {
   @override
   Future<bool> saveUserInfo(Address? address,bool isDelete) async {
     try {
+      if (!isDelete) await _fillRegionId(address);
+      final targetId = int.tryParse(address?.id ?? '');
+      final isNew = targetId == null || targetId == 0;
 
-      var params = <String, dynamic>{};
-      params['id'] = UserBox().userInfo?.id;
-      params['email'] = UserBox().userInfo?.email;
-      params['firstname'] = UserBox().userInfo?.firstName;
-      params['lastname'] = UserBox().userInfo?.lastName;
-      // This PUT replaces the customer's ENTIRE address book, so any field left
-      // out of the payload is cleared server-side. default_billing /
-      // default_shipping were never modelled, so every add, edit and delete
-      // silently wiped the shopper's default address — and with it the
-      // checkout pre-fill. Carry them across, matched by address id, from the
-      // last server copy we hold.
-      final priorAddresses = UserBox().userInfo?.addresses ?? const <Addresses>[];
-      Addresses? priorFor(int? id) {
-        if (id == null) return null;
-        for (final a in priorAddresses) {
-          if (a.id == id) return a;
+      // The book is rebuilt from the server's own copy, so every address the
+      // shopper did not touch goes back exactly as Magento holds it, default
+      // billing/shipping flags and region_id included.
+      final body = await _putCustomerMe(UserBox().userInfo?.cookie,
+          (customer) {
+        final book = <Map<String, dynamic>>[];
+        var found = false;
+        for (final entry in (customer['addresses'] as List?) ?? const []) {
+          if (entry is! Map) continue;
+          final saved = Map<String, dynamic>.from(entry);
+          final isTarget = !isNew && saved['id'] == targetId;
+          found = found || isTarget;
+          if (isTarget && isDelete) continue;
+          if (isTarget) {
+            _writeAddressFields(saved, address!);
+          } else {
+            // Untouched addresses are re-sent too, so one holding a `+20…`
+            // number failed the whole save, deletes included (86d3rrpqr).
+            saved['telephone'] = MagentoHelper.normalizePhoneForMagento(
+                saved['telephone']?.toString());
+          }
+          book.add(saved);
         }
-        return null;
-      }
-
-      List<Addresses> addressArr = [];
-      UserBox().addresses?.forEach((element){
-        Addresses addresses = Addresses();
-        addresses.customerId = int.parse(UserBox().userInfo?.id ?? '0');
-        if(element.id == address?.id){
-          addresses.id = int.parse(element.id ?? '0');
-          addresses.firstname = address?.firstName;
-          addresses.lastname = address?.lastName;
-          addresses.telephone =
-              MagentoHelper.normalizePhoneForMagento(address?.phoneNumber);
-          addresses.street = [];
-          addresses.street?.add(address?.street ?? "");
-          addresses.city = address?.city;
-          addresses.postcode = address?.zipCode;
-          addresses.region = Region();
-          addresses.region?.region = address?.state;
-          addresses.countryId = address?.countryId;
-        }else{
-          addresses.id = int.parse(element.id ?? '0');
-          addresses.firstname = element.firstName;
-          addresses.lastname = element.lastName;
-          // Untouched addresses are re-sent verbatim by this PUT, so one of
-          // them holding a `+20…` number failed the whole save — including
-          // deletes. Normalise them too (86d3rrpqr).
-          addresses.telephone =
-              MagentoHelper.normalizePhoneForMagento(element.phoneNumber);
-          addresses.street = [];
-          addresses.street?.add(element.street ?? "");
-          addresses.city = element.city;
-          addresses.postcode = element.zipCode;
-          addresses.region = Region();
-          addresses.region?.region = element.state;
-          addresses.countryId = element.countryId;
+        // An edited address that is gone from the server (deleted on the
+        // website meanwhile) is saved as a new one rather than dropped.
+        if ((isNew || !found) && !isDelete && address != null) {
+          book.add(_writeAddressFields(
+              {'customer_id': customer['id']}, address));
         }
-        // Restore the default flags for whichever address this is — otherwise
-        // re-sending the book clears them.
-        final prior = priorFor(addresses.id);
-        addresses.defaultBilling = prior?.defaultBilling ?? false;
-        addresses.defaultShipping = prior?.defaultShipping ?? false;
-        if(element.id == address?.id && isDelete) {
-
-        }else{
-          addressArr.add(addresses);
-        }
-      });
-      if(address?.id == null || address?.id == 0){
-        Addresses addresses = Addresses();
-        addresses.customerId = int.parse(UserBox().userInfo?.id ?? '0');
-        addresses.firstname = address?.firstName;
-        addresses.lastname = address?.lastName;
-        addresses.telephone =
-            MagentoHelper.normalizePhoneForMagento(address?.phoneNumber);
-        addresses.street = [];
-        addresses.street?.add(address?.street ?? "");
-        addresses.city = address?.city;
-        addresses.postcode = address?.zipCode;
-        addresses.region = Region();
-        addresses.region?.region = address?.state;
-        addresses.countryId = address?.countryId ?? address?.country;
-        addressArr.add(addresses);
-      }
-      params['addresses'] = addressArr.toList();
-      printLog(convert.jsonEncode({'customer': params}));
-      var res = await httpPut(MagentoHelper.buildUrl(domain, 'customers/me')!,
-          headers: {'Authorization': 'Bearer ${UserBox().userInfo?.cookie}'
-            ,'content-type': 'application/json'},
-          body: convert.jsonEncode({'customer': params}));
-      final body = convert.jsonDecode(res.body);
-      printLog(body);
-      if (body['message'] != null) {
-        throw Exception(MagentoHelper.getErrorMessage(body));
-      } else {
-        User user = User.fromMagentoJson(body, UserBox().userInfo?.cookie);
-        saveDataToLocal(user);
-        return true;
-      }
+        customer['addresses'] = book;
+      }, keepAddresses: true);
+      saveDataToLocal(User.fromMagentoJson(body, UserBox().userInfo?.cookie));
+      return true;
     } catch (e) {
       rethrow;
     }
+  }
+
+  /// Copies the address form's fields onto a customer address as
+  /// customers/me returns it, leaving the fields the form does not edit.
+  Map<String, dynamic> _writeAddressFields(
+      Map<String, dynamic> target, Address address) {
+    final regionId = int.tryParse(address.regionId ?? '');
+    target['firstname'] = address.firstName;
+    target['lastname'] = address.lastName;
+    target['telephone'] =
+        MagentoHelper.normalizePhoneForMagento(address.phoneNumber);
+    target['street'] = [address.street ?? ''];
+    target['city'] = address.city;
+    target['postcode'] = address.zipCode;
+    target['country_id'] = _countryOf(address);
+    target['region'] = {
+      'region': address.state,
+      if (regionId != null) 'region_id': regionId,
+    };
+    target['region_id'] = regionId;
+    return target;
+  }
+
+  /// The address's ISO country code. countryId can hold '' (Address.fromJson
+  /// defaults it), so fall back to country rather than sending a blank.
+  static String? _countryOf(Address address) =>
+      (address.countryId?.isNotEmpty ?? false)
+          ? address.countryId
+          : address.country;
+
+  /// Governorate lists from `/V1/city`, per country, for [_fillRegionId].
+  final Map<String, Future<List<City>>> _governorates = {};
+
+  /// Sets [address]'s region_id from its governorate name when it has none.
+  ///
+  /// Only the address form's dropdown knows the id. Addresses from the
+  /// account's billing/shipping defaults, or saved before region_id was kept,
+  /// carry just the name, and without the id Styleya's shipping rates don't
+  /// resolve. Matches the name the way the form does; leaves the id unset if
+  /// nothing matches or the list can't load.
+  Future<void> _fillRegionId(Address? address) async {
+    if (address == null || (address.regionId?.isNotEmpty ?? false)) return;
+    final name = address.state?.trim().toLowerCase() ?? '';
+    final country = _countryOf(address) ?? '';
+    if (name.isEmpty || country.isEmpty) return;
+    try {
+      final list = await _governorates.putIfAbsent(country, () async {
+        final raw = await getCitiesByCountryId(country);
+        return raw is List ? raw.map(City.cityConfig).toList() : <City>[];
+      });
+      for (final g in list) {
+        if ((g.name ?? '').trim().toLowerCase() == name ||
+            (g.regionName ?? '').trim().toLowerCase() == name) {
+          address.regionId = g.regionId;
+          return;
+        }
+      }
+    } catch (e) {
+      _governorates.remove(country);
+      printLog('[Magento] region_id lookup failed for $country: $e');
+    }
+  }
+
+  /// PUT customers/me replaces the whole customer: a field missing from the
+  /// body is cleared, custom attributes and default-address flags included.
+  /// So read the record fresh, let [edit] change what it needs, and send the
+  /// rest back exactly as it came.
+  ///
+  /// `addresses` is dropped unless [keepAddresses]: CustomerRepository::save()
+  /// leaves the address book alone when the key is absent, but re-saves every
+  /// address (and deletes any id not listed) when it is present.
+  Future<Map<String, dynamic>> _putCustomerMe(
+      String? token, void Function(Map<String, dynamic> customer) edit,
+      {bool keepAddresses = false}) async {
+    final url = MagentoHelper.buildUrl(domain, 'customers/me')!;
+    final res =
+        await httpGet(url, headers: {'Authorization': 'Bearer $token'});
+    final customer = convert.jsonDecode(res.body);
+    if (customer is! Map<String, dynamic> || customer['message'] != null) {
+      throw Exception(customer is Map
+          ? MagentoHelper.getErrorMessage(customer)
+          : 'Could not load your account (HTTP ${res.statusCode}).');
+    }
+    if (!keepAddresses) customer.remove('addresses');
+    edit(customer);
+
+    final put = await httpPut(url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'content-type': 'application/json',
+        },
+        body: convert.jsonEncode({'customer': customer}));
+    final body = convert.jsonDecode(put.body);
+    if (body is! Map<String, dynamic> || body['message'] != null) {
+      throw Exception(body is Map
+          ? MagentoHelper.getErrorMessage(body)
+          : 'Could not save your account (HTTP ${put.statusCode}).');
+    }
+    return body;
+  }
+
+  /// Sets one custom attribute on a customer record, keeping the others.
+  static void _setCustomAttribute(
+      Map<String, dynamic> customer, String code, dynamic value) {
+    final attributes = [
+      for (final a in (customer['custom_attributes'] as List?) ?? const [])
+        if (a is Map && a['attribute_code'] != code) a,
+      {'attribute_code': code, 'value': value},
+    ];
+    customer['custom_attributes'] = attributes;
   }
 
   void saveDataToLocal(User user) {
@@ -3309,6 +3346,9 @@ class MagentoService extends BaseServices {
         address.city = element.city;
         address.zipCode = element.postcode;
         address.state = element.region?.region;
+        final regionId = element.regionId ?? element.region?.regionId;
+        address.regionId =
+            (regionId == null || regionId == 0) ? null : '$regionId';
         address.country = element.countryId;
         address.countryId = element.countryId;
         listAddress.add(address);
@@ -3998,89 +4038,33 @@ class MagentoService extends BaseServices {
         }));
         final body = convert.jsonDecode(response.body);
         if (isNotBlank(json['phoneNumber'])){
-          final payLoad = convert.jsonEncode({
-            'customer': {
-              'email': UserBox().userInfo?.email,
-              'firstname': UserBox().userInfo?.firstName,
-              'lastname': UserBox().userInfo?.lastName,
-              "custom_attributes":[
-                {
-                  'attribute_code': "mobile",
-                  'value': json['phoneNumber'],
-                }
-              ]
-            }
+          // Same as the standalone phone branch: a rejected mobile write
+          // throws instead of being swallowed (86d3tkj7z #1, #2).
+          await _putCustomerMe(UserBox().userInfo?.cookie, (customer) {
+            _setCustomAttribute(customer, 'mobile', json['phoneNumber']);
           });
-          var res = await httpPut(MagentoHelper.buildUrl(domain, 'customers/me')!,
-              headers: {'Authorization': 'Bearer ${UserBox().userInfo?.cookie}'
-                ,'content-type': 'application/json'},
-              body: payLoad);
-          final phoneBody = convert.jsonDecode(res.body);
-          printLog(phoneBody);
-          // Same as the standalone phone branch: don't swallow a rejected
-          // mobile write when the phone is changed together with the password
-          // (86d3tkj7z #1, #2).
-          if (phoneBody is Map && phoneBody['message'] != null) {
-            throw Exception(MagentoHelper.getErrorMessage(phoneBody));
-          }
         }
         if (body is Map && body['message'] != null) {
           throw Exception(MagentoHelper.getErrorMessage(body));
         }
       }else if (isNotBlank(json['deviceToken'])) {
-        final payLoad = convert.jsonEncode({
-          'customer': {
-            'email': UserBox().userInfo?.email,
-            'firstname': UserBox().userInfo?.firstName,
-            'lastname': UserBox().userInfo?.lastName,
-            "custom_attributes":[
-              {
-                'attribute_code': "mobile_token",
-                'value': json['deviceToken'],
-              }
-            ]
-          }
+        // Runs on every launch, so a partial body here used to rewrite the
+        // whole customer each time. _putCustomerMe sends the full record.
+        final body =
+            await _putCustomerMe(UserBox().userInfo?.cookie, (customer) {
+          _setCustomAttribute(customer, 'mobile_token', json['deviceToken']);
         });
-        var res = await httpPut(MagentoHelper.buildUrl(domain, 'customers/me')!,
-            headers: {'Authorization': 'Bearer ${UserBox().userInfo?.cookie}'
-              ,'content-type': 'application/json'},
-            body: payLoad);
-        final body = convert.jsonDecode(res.body);
-        printLog(body);
-        if (body['message'] != null) {
-          throw Exception(MagentoHelper.getErrorMessage(body));
-        } else {
-          User user = User.fromMagentoJson(body, UserBox().userInfo?.cookie);
-          return user.toJson();
-        }
+        User user = User.fromMagentoJson(body, UserBox().userInfo?.cookie);
+        return user.toJson();
       }else if (isNotBlank(json['phoneNumber'])){
-        final payLoad = convert.jsonEncode({
-          'customer': {
-            'email': UserBox().userInfo?.email,
-            'firstname': UserBox().userInfo?.firstName,
-            'lastname': UserBox().userInfo?.lastName,
-            "custom_attributes":[
-              {
-                'attribute_code': "mobile",
-                'value': json['phoneNumber'],
-              }
-            ]
-          }
-        });
-        var res = await httpPut(MagentoHelper.buildUrl(domain, 'customers/me')!,
-            headers: {'Authorization': 'Bearer ${UserBox().userInfo?.cookie}'
-              ,'content-type': 'application/json'},
-            body: payLoad);
-        final body = convert.jsonDecode(res.body);
-        printLog(body);
         // A phone update Magento rejects (most often a `mobile` that already
         // belongs to another account) used to be swallowed here: the method
         // returned success, the screen kept the new number locally, and it
         // reverted on the next customers/me refresh with no message shown
-        // (86d3tkj7z #1, #2). Surface it so the screen's onError fires.
-        if (body is Map && body['message'] != null) {
-          throw Exception(MagentoHelper.getErrorMessage(body));
-        }
+        // (86d3tkj7z #1, #2). _putCustomerMe throws it so onError fires.
+        await _putCustomerMe(UserBox().userInfo?.cookie, (customer) {
+          _setCustomAttribute(customer, 'mobile', json['phoneNumber']);
+        });
       }
       return json;
     } catch (err) {

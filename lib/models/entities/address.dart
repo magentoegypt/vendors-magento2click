@@ -10,6 +10,10 @@ class Address {
   String? block;
   String? city;
   String? state;
+
+  /// Magento's `region_id` for [state] (the governorate), from `/V1/city`.
+  /// Styleya prices shipping by region, so the name alone is not enough.
+  String? regionId;
   String? country;
   String? countryId;
   String? phoneNumber;
@@ -80,6 +84,7 @@ class Address {
 
     city = parsedJson['city'];
     state = parsedJson['region'];
+    regionId = parsedJson['region_id']?.toString();
     // Magento names these `country_id` and `telephone`. Reading 'country' /
     // 'countryId' / 'mobile' — keys that do not exist in a Magento address —
     // is why order details showed a blank country and the literal text "null"
@@ -116,6 +121,7 @@ class Address {
       'company': apartment ?? '',
       'city': city,
       'state': state,
+      'region_id': regionId,
       'country': country,
       'countryId': countryId,
       'phone': phoneNumber,
@@ -152,6 +158,7 @@ class Address {
       apartment = json['company'];
       city = json['city'];
       state = json['state'];
+      regionId = json['region_id']?.toString();
       country = json['country'];
       countryId = json['countryId'];
       email = json['email'];
@@ -170,6 +177,7 @@ class Address {
           state != null && state!.isNotEmpty && state != 'SG';
       if (!hasRealState && (city?.isNotEmpty ?? false)) {
         state = city;
+        regionId = null;
         city = block ?? '';
         block = '';
       }
@@ -199,9 +207,9 @@ class Address {
       'address': {
         'save_in_address_book': saveInAddressBook ? 1 : 0,
         'country_id': country,
-        // 'region_id': state != null && int.tryParse(state!) != null
-        //     ? int.parse(state!)
-        //     : 0,
+        // Sent only when known: a guessed 0 would point at no region.
+        if (int.tryParse(regionId ?? '') != null)
+          'region_id': int.parse(regionId!),
         // Only include the apartment/block as a second street line when it
         // actually has content. Emitting an empty/`"null"` second line makes
         // Magento reject the order ("Street Address" cannot contain more than
@@ -263,6 +271,7 @@ class Address {
       'company': apartment ?? '',
       'city': city,
       'state': state,
+      'region_id': regionId,
       'countryId': countryId,
       'country': country,
       'email': email,
