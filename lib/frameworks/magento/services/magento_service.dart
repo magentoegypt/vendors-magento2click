@@ -1574,7 +1574,7 @@ class MagentoService extends BaseServices {
     try {
       var response = await httpGet(
           MagentoHelper.buildUrl(
-              domain, 'mstore/products&searchCriteria[pageSize]=$apiPageSize')!,
+              domain, 'mstore/products?searchCriteria[pageSize]=$apiPageSize')!,
           headers: {'Authorization': 'Bearer $accessToken'});
       var list = <Product>[];
       if (response.statusCode == 200) {
@@ -1601,10 +1601,13 @@ class MagentoService extends BaseServices {
         return list;
       }
 
-      var endPoint = '?';
+      // Always bound the page: mstore/products returns every matching product
+      // when pageSize is missing. It used to be sent only alongside a category,
+      // so a layout without one asked for the whole catalogue.
+      var endPoint = '?searchCriteria[pageSize]=${layoutPageSize(config)}';
       if (config.containsKey('category')) {
         endPoint +=
-            "searchCriteria[filter_groups][0][filters][0][field]=category_id&searchCriteria[filter_groups][0][filters][0][value]=${config["category"]}&searchCriteria[filter_groups][0][filters][0][condition_type]=eq&searchCriteria[pageSize]=${config['limit'] ?? (config.containsKey('page') ? apiPageSize : kHomeCarouselLimit)}";
+            "&searchCriteria[filter_groups][0][filters][0][field]=category_id&searchCriteria[filter_groups][0][filters][0][value]=${config["category"]}&searchCriteria[filter_groups][0][filters][0][condition_type]=eq";
       }
       if (config.containsKey('page')) {
         endPoint += "&searchCriteria[currentPage]=${config["page"]}";
@@ -1656,6 +1659,16 @@ class MagentoService extends BaseServices {
     } catch (e) {
       rethrow;
     }
+  }
+
+  /// Page size for a home layout block: its `limit` when that is a positive
+  /// number, else a full page for a paged layout and a carousel's worth for
+  /// the rest. The layout JSON can carry the limit as a number, a numeric
+  /// string, "" or 0, and the last two must not mean "no limit".
+  static int layoutPageSize(Map config) {
+    final limit = num.tryParse('${config['limit'] ?? ''}')?.toInt() ?? 0;
+    if (limit > 0) return limit;
+    return config.containsKey('page') ? apiPageSize : kHomeCarouselLimit;
   }
 
   @override
@@ -3486,6 +3499,7 @@ class MagentoService extends BaseServices {
     var endPoint =
         '?searchCriteria[filterGroups][0][filters][0][field]=entity_id&searchCriteria[filterGroups][0][filters][0][condition_type]=eq';
     endPoint += '&searchCriteria[filterGroups][0][filters][0][value]=$id';
+    endPoint += '&searchCriteria[pageSize]=1';
     // `mstore/products`, not plain `products`: this catalogue discounts through
     // catalog price rules, and only the mstore module applies them — the stock
     // endpoint returns the undiscounted `price` with no `minimal_price` at all,
@@ -3517,7 +3531,8 @@ class MagentoService extends BaseServices {
         '?searchCriteria[filterGroups][0][filters][0][field]=sku'
         '&searchCriteria[filterGroups][0][filters][0][condition_type]=eq'
         '&searchCriteria[filterGroups][0][filters][0][value]='
-        '${Uri.encodeQueryComponent(sku)}';
+        '${Uri.encodeQueryComponent(sku)}'
+        '&searchCriteria[pageSize]=1';
     // mstore, for the catalog-price-rule reason documented in getProduct above.
     final response = await httpGet(
         MagentoHelper.buildUrl(domain, 'mstore/products$endPoint')!,
