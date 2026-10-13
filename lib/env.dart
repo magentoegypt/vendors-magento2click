@@ -120,8 +120,12 @@ Map<String, dynamic> environment = {
 
     /// Below config is used for Magento store
     "DefaultStoreViewCode": "",
-    "EnableAttributesConfigurableProduct": ["color", "size"],
-    "EnableAttributesLabelConfigurableProduct": ["color", "size"],
+    // Empty on purpose. This list is fetched by code at startup, and Styleya
+    // has no "color" or "size" attribute (colour is all_color, sizes vary per
+    // attribute set), so both requests 404'd and nothing ever used them.
+    // Variant options come from configurable-products/{sku}/options/list.
+    "EnableAttributesConfigurableProduct": [],
+    "EnableAttributesLabelConfigurableProduct": [],
 
     /// if the woo commerce website supports multi languages
     /// set false if the website only have one language

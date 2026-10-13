@@ -25,7 +25,9 @@ abstract class BaseServices {
 
   final String domain;
 
-  final String adminKey = "jd7u3bu9g7ca1vgocv0dvpr77xof57jf";
+  /// The integration token from serverConfig.accessToken in env.dart, so
+  /// changing it there changes it everywhere.
+  String get adminKey => ServerConfig().accessToken ?? '';
 
   BaseServices({
     required this.domain,

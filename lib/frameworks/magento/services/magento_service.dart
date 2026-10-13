@@ -28,6 +28,7 @@ import '../../../models/index.dart'
         PaymentMethod,
         Product,
         ProductAttribute,
+        ProductItem,
         ProductVariation,
         Review,
         ShippingMethod,
@@ -1937,6 +1938,12 @@ class MagentoService extends BaseServices {
     String? lang,
     bool webParityOnly = false,
   }) async {
+    // Brand screens reuse the category listing with a brand option id (and the
+    // synthetic "Brands" node has a negative id). Neither is a category, and
+    // GraphQL answers category_id 893 ("Junior") with a search error.
+    if (brandIds.contains(categoryId) || categoryId.startsWith('-')) {
+      return const [];
+    }
     try {
       final langCode = (lang ?? SettingsBox().languageCode ?? 'en').toLowerCase();
       final store = langCode == 'ar' ? 'eg_ar' : 'eg_en';
@@ -2809,25 +2816,20 @@ class MagentoService extends BaseServices {
   Future<PagingResponse<Order>> getMyOrders({User? user, dynamic cursor, String? cartId,}) async {
     try {
       //${cursor - 1}
-      // Scope to the logged-in customer_id, exactly like the website's
-      // "My Orders". Filtering by customer_email instead also matched GUEST
-      // orders placed with the same email (customer_id null, is_guest 1) — which
-      // the website never lists — so the app showed orders the site did not, and
-      // an account whose only orders were guest checkouts saw a list where the
-      // website showed none (86d3tkhgz #1). customer_id additionally drops any
-      // same-email order that belongs to a different account.
+      // mstore/me/orders with the customer's own token. The admin route
+      // (V1/orders) refuses the app's integration token by design, so it
+      // returned nothing. The server forces the customer_id filter from the
+      // token, which keeps the website's "My Orders" scope: guest orders placed
+      // with the same email stay out (86d3tkhgz #1).
       var endPoint = '?';
-      endPoint +=
-          'searchCriteria[filter_groups][0][filters][0][field]=customer_id&searchCriteria[filter_groups][0][filters][0][value]=${user!.id}&searchCriteria[filter_groups][0][filters][0][condition_type]=eq';
-      endPoint += '&searchCriteria[currentPage]=${cursor}';
+      endPoint += 'searchCriteria[currentPage]=${cursor}';
       endPoint += '&searchCriteria[sortOrders][1][field]=created_at';
       endPoint += '&searchCriteria[pageSize]=$apiPageSize';
       endPoint += '&dummy=${DateTime.now().millisecondsSinceEpoch}';
 
-      printLog('[Magento] admin token ${isBlank(accessToken) ? 'MISSING' : 'present'}');
       var response = await httpGet(
-          MagentoHelper.buildUrl(domain, 'orders$endPoint')!,
-          headers: {'Authorization': 'Bearer $accessToken'});
+          MagentoHelper.buildUrl(domain, 'mstore/me/orders$endPoint')!,
+          headers: {'Authorization': 'Bearer ${user!.cookie}'});
 
       var list = <Order>[];
       if (response.statusCode == 200) {
@@ -2895,11 +2897,16 @@ class MagentoService extends BaseServices {
           guestQuoteId = null;
         }
 
-        var order = await getSingleOrder(user: user, entityId: body.toString());
-      //  order.id = body.toString();
-     //   order.number = body.toString();
-     //   order.status = OrderStatus.pending;
-        return order;
+        // The order exists from here on. If reading it back fails, show what
+        // the cart already knows instead of an error that invites a re-order.
+        final orderId = body.toString();
+        if (isGuest) return _orderFromCart(orderId, cartModel);
+        try {
+          return await getSingleOrder(user: user, entityId: orderId);
+        } catch (e) {
+          printLog('[Magento] could not read back order $orderId: $e');
+          return _orderFromCart(orderId, cartModel);
+        }
       } else {
         if (body['message'] != null) {
           throw Exception(MagentoHelper.getErrorMessage(body));
@@ -2916,12 +2923,46 @@ class MagentoService extends BaseServices {
   Future<Order> getSingleOrder({required UserModel? user, required String entityId}) async {
     try {
 
-      var url =  MagentoHelper.buildUrl(domain, 'orders/$entityId')!;
+  /// The order as the app knows it without reading it back.
+  ///
+  /// A guest has no customer token, and the integration token is refused on
+  /// V1/orders by design, so a guest order cannot be fetched after it is
+  /// placed. Placing the order returns only its entity id, not the increment
+  /// id the confirmation email shows, so that id doubles as the number.
+  Order _orderFromCart(String orderId, CartModel cartModel) {
+    final order = Order(
+      id: orderId,
+      number: orderId,
+      status: OrderStatus.pending,
+      createdAt: DateTime.now(),
+      total: cartModel.getTotal(),
+    );
+    order.paymentMethodTitle = cartModel.paymentMethod?.title;
+    order.shippingMethodTitle = cartModel.shippingMethod?.title;
+    order.billing = cartModel.address;
+    order.shipping = cartModel.address;
+    for (final key in cartModel.productsInCart.keys) {
+      final product =
+          cartModel.item[key] ?? cartModel.item[Product.cleanProductID(key)];
+      order.lineItems.add(ProductItem.fromLocalJson({
+        'product_id': product?.id,
+        'sku': product?.sku,
+        'name': product?.name,
+        'quantity': cartModel.productsInCart[key],
+        'total': cartModel.getProductPrice(key),
+        'featuredImage': product?.imageFeature,
+      }));
+    }
+    return order;
+  }
+
+  /// Reads a placed order back with the customer's token. mstore/me/orders/:id
+  /// only answers the order's owner.
+      var url =  MagentoHelper.buildUrl(domain, 'mstore/me/orders/$entityId')!;
       printLog(url);
-      printLog('[Magento] admin token ${isBlank(accessToken) ? 'MISSING' : 'present'}');
       final res = await httpGet(url,
           headers:  {
-            'Authorization': 'Bearer ${accessToken}',
+            'Authorization': 'Bearer ${user!.user!.cookie}',
             'content-type': 'application/json'
           });
 

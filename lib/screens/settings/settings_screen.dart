@@ -95,7 +95,9 @@ class SettingScreenState extends State<SettingScreen>
     SectionItem(title: S.of(context).accountInformation, url: "accountInformation"),
     SectionItem(title: S.of(context).newsletterSubscriptions, url: "newsletterSubscription"),
     SectionItem(title: S.of(context).myReviews, url: "myReviews"),
-    SectionItem(title: S.of(context).myReturns, url: "myReturns"),
+    // My Returns stays hidden on Styleya: its RMA routes
+    // (customers/me/return-policy, returnable-orders, returns*) answer 404
+    // there. Put it back once the backend ships a returns API.
     // My Reviews is native now (above): the backend added
     // GET /V1/customers/me/reviews (self), so the customer's own reviews render
     // in-app instead of the dead webview that used to land on the login form.
