@@ -1613,16 +1613,7 @@ class MagentoService extends BaseServices {
         endPoint += "&searchCriteria[currentPage]=${config["page"]}";
       }
 
-      /// sort by
-      if (config.containsKey('orderby') && config['orderby'] != null) {
-        endPoint +=
-            '&searchCriteria[sortOrders][1][field]=${getOrderByKey(config['orderBy'])}';
-      }
-
-      if (config.containsKey('order') && config['order'] != null) {
-        endPoint +=
-            '&searchCriteria[sortOrders][1][direction]=${getOrderDirection(config['order'])}';
-      }
+      endPoint += layoutSortQuery(config);
 
       endPoint +=
           '&searchCriteria[filter_groups][1][filters][0][field]=visibility&searchCriteria[filter_groups][1][filters][0][value]=4';
@@ -1669,6 +1660,22 @@ class MagentoService extends BaseServices {
     final limit = num.tryParse('${config['limit'] ?? ''}')?.toInt() ?? 0;
     if (limit > 0) return limit;
     return config.containsKey('page') ? apiPageSize : kHomeCarouselLimit;
+  }
+
+  /// The sort for a home layout block, as a query fragment ('' for none).
+  ///
+  /// The block's sort lives under `orderby` (ProductConfig), but this used to
+  /// read `orderBy`, so every block fell back to created_at whatever it asked
+  /// for. Field and direction now go together, as on the category listing:
+  /// a direction alone named no field, and a field alone sorted ascending,
+  /// which put a "date" block's oldest products first. A block that sets
+  /// neither keeps the endpoint's own order.
+  String layoutSortQuery(Map config) {
+    final orderBy = config['orderby'];
+    final order = config['order'];
+    if (orderBy == null && order == null) return '';
+    return '&searchCriteria[sortOrders][1][field]=${getOrderByKey(orderBy)}'
+        '&searchCriteria[sortOrders][1][direction]=${getOrderDirection(order)}';
   }
 
   @override
