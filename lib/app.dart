@@ -5,6 +5,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:inspireui/inspireui.dart' show HttpHooks;
 import 'package:provider/provider.dart';
 import 'package:tuple/tuple.dart';
 
@@ -23,6 +24,7 @@ import 'models/index.dart';
 import 'modules/dynamic_layout/config/app_config.dart';
 import 'routes/route.dart';
 import 'screens/categories/layouts/multi_level.dart';
+import 'services/customer_session.dart';
 import 'services/index.dart';
 import 'widgets/overlay/custom_overlay_state.dart';
 
@@ -215,6 +217,8 @@ class AppState extends State<App>
 
     appInitialModules();
 
+    // An expired customer token surfaces as EventExpiredCookie below.
+    HttpHooks.onUnauthorized = handleExpiredCustomerToken;
     _subAppCookieExpiry = eventBus.on<EventExpiredCookie>().listen((event) {
       _onLogout(
         isRequiredLogin: event.isRequiredLogin,
@@ -262,10 +266,11 @@ class AppState extends State<App>
     _wishlist.clearWishList();
     _user.logout();
     if (isRequiredLogin || Services().widget.isRequiredLogin) {
-      NavigateTools.navigateToLogin(
-        context,
-        replacement: true,
-      );
+      // Pushed, not a replacement: an expiry noticed in the background (at
+      // launch, say) would otherwise replace the only screen, leaving no way
+      // back to browse as a guest. Logging in still lands where
+      // navigateAfterLogin sends it.
+      NavigateTools.navigateToLogin(context);
     }
     if (errMsg?.isNotEmpty ?? false) {
       _messangerKey.currentState

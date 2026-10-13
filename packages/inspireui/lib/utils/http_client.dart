@@ -119,6 +119,11 @@ Future<http.Response> makeRequest(
     throw e.message;
   }
 
+  if (response.statusCode == 401) {
+    final replacement = HttpHooks.onUnauthorized?.call(response);
+    if (replacement != null) return replacement;
+  }
+
   if (response.statusCode == 404 && !allowNotFound) {
     // Throws rather than returning the response, for the reason spelled out on
     // [allowNotFound] above. What changes is the message — the backend's own
@@ -371,4 +376,14 @@ class ProxyException implements Exception {
 
 class MultiSite {
   static Uri? mainSiteUrl;
+}
+
+class HttpHooks {
+  /// Sees every 401 that goes through [makeRequest] before the caller does.
+  /// Return a response to hand the caller in its place, or null to pass the
+  /// original through.
+  ///
+  /// This package can't tell whose credentials were refused; the app can,
+  /// from the request's Authorization header.
+  static http.Response? Function(http.Response response)? onUnauthorized;
 }

@@ -15,6 +15,7 @@ import '../../generated/l10n.dart';
 import '../../menu/index.dart' show MainTabControlDelegate;
 import '../../models/index.dart' show AppModel, CartModel, Product, UserModel;
 import '../../routes/flux_navigate.dart';
+import '../../services/customer_session.dart';
 import '../../services/index.dart';
 import '../../widgets/common/refresh_scroll_physics.dart';
 import '../../widgets/product/cart_item.dart';
@@ -656,18 +657,13 @@ class _MyCartState extends State<MyCart> with SingleTickerProviderStateMixin {
         );
       },
       error: (message) async {
-        if (message ==
-            Exception('Token expired. Please logout then login again')
-                .toString()) {
+        if (message == Exception(sessionExpiredMessage).toString()) {
+          // The app has already logged the shopper out and opened the login
+          // screen (handleExpiredCustomerToken); opening another would stack
+          // two.
           setState(() {
             isLoading = false;
           });
-          //logout
-          final userModel = Provider.of<UserModel>(context, listen: false);
-          await userModel.logout();
-          await Services().firebase.signOut();
-
-          _loginWithResult(context);
         } else {
           hideLoading(message);
           Future.delayed(const Duration(seconds: 3), () {

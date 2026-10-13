@@ -37,6 +37,7 @@ import '../../../models/index.dart'
         User,
         UserModel;
 import '../../../services/base_services.dart';
+import '../../../services/customer_session.dart';
 import '../../../services/https.dart';
 import '../../../services/services.dart';
 import 'magento_helper.dart';
@@ -3670,7 +3671,7 @@ class MagentoService extends BaseServices {
           }
         } else if (res.statusCode == 401) {
           printLog(url);
-          throw Exception('Token expired. Please logout then login again');
+          throw Exception(sessionExpiredMessage);
         } else {
           // This used to read `!= 404`, so that a 404 fell through to the quote
           // creation below. It never did — makeRequest throws on a 404 unless
@@ -3732,7 +3733,7 @@ class MagentoService extends BaseServices {
         return "";
       }else if (res.statusCode == 401) {
         _onLogout();
-        throw Exception('Token expired. Please logout then login again');
+        throw Exception(sessionExpiredMessage);
       } else {
         if (body['message'] != null) {
           return body['message'];
@@ -3762,7 +3763,7 @@ class MagentoService extends BaseServices {
         // Customer token expired — mirror createCart()'s behaviour instead of
         // surfacing the raw "consumer isn't authorized" text.
         _onLogout();
-        return S.current.sessionExpired;
+        return sessionExpiredMessage;
       }
 
       /// A missing/inactive customer quote 404s here in two shapes: a brand-new
@@ -4499,7 +4500,7 @@ class MagentoService extends BaseServices {
         }
       }else if (response.statusCode == 401) {
         _onLogout();
-        throw Exception('Token expired. Please logout then login again');
+        throw Exception(sessionExpiredMessage);
       }else{
         if (body['message'] != null) {
           throw Exception(body['message']);
@@ -4666,9 +4667,15 @@ class MagentoService extends BaseServices {
     }
   }
 
+  /// Fallback for a cart call's 401 that [handleExpiredCustomerToken] did not
+  /// recognise. Fires the same event, so either way the shopper is logged out
+  /// once and sent to log in once.
   void _onLogout() {
     if(UserBox().isLoggedIn) {
-      eventBus.fire(const EventExpiredCookie());
+      eventBus.fire(EventExpiredCookie(
+        isRequiredLogin: true,
+        errMsg: sessionExpiredMessage,
+      ));
     }
   }
 
